@@ -1,0 +1,2 @@
+[console_scripts]
+ez-wc = ez_wechatblog.cli:app
