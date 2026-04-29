@@ -1,6 +1,6 @@
 [project]
 name = "ez-wechatblog"
-version = "26.0.b1.post20260429"
+version = "20260430A"
 description = "微信公众号文章 → 通用 Markdown / 多平台博客后端"
 authors = [{ name = "EZ_WeChatBlog Contributors" }]
 license = { text = "MIT" }
