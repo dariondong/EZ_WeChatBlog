@@ -1,7 +1,62 @@
 import pytest
-from bs4 import BeautifulSoup
-
 from ez_wechatblog.parser.wechat_parser import WeChatParser, ArticleMeta
+
+
+class TestParserRobustness:
+    def test_empty_html_raises(self):
+        parser = WeChatParser()
+        with pytest.raises(ValueError, match="为空"):
+            parser.parse("")
+
+    def test_none_html_raises(self):
+        parser = WeChatParser()
+        with pytest.raises(ValueError):
+            parser.parse(None)
+
+    def test_whitespace_only_raises(self):
+        parser = WeChatParser()
+        with pytest.raises(ValueError, match="为空"):
+            parser.parse("   \n\t  ")
+
+    def test_no_content_raises(self):
+        parser = WeChatParser()
+        with pytest.raises(ValueError, match="无法找到"):
+            parser.parse("<html><body><p>no content</p></body></html>")
+
+    def test_returns_four_values(self):
+        parser = WeChatParser()
+        html = '<html><head><title>T</title></head><body><div id="js_content"><p>text</p></div></body></html>'
+        result = parser.parse(html, url="https://test.com")
+        assert len(result) == 4
+        body, meta, images, raw_html = result
+        assert isinstance(body, str)
+        assert isinstance(meta, ArticleMeta)
+        assert isinstance(images, list)
+        assert isinstance(raw_html, str)
+
+    def test_raw_html_contains_tags(self):
+        parser = WeChatParser()
+        html = '<html><head><title>T</title></head><body><div id="js_content"><p>Hello</p></div></body></html>'
+        _, _, _, raw_html = parser.parse(html)
+        assert "<p>" in raw_html
+        assert "Hello" in raw_html
+
+    def test_normalize_date_fallback(self):
+        parser = WeChatParser()
+        html = '<html><head><title>T</title></head><body><div id="js_content"><p>text</p></div></body></html>'
+        _, meta, _, _ = parser.parse(html)
+        assert meta.date
+        assert len(meta.date) == 10
+
+
+class TestArticleMeta:
+    def test_to_dict(self):
+        meta = ArticleMeta(title="T", author="A", date="2024-01-01",
+                           tags=["tech"], url="https://example.com")
+        d = meta.to_dict()
+        assert d["title"] == "T"
+        assert d["author"] == "A"
+        assert d["tags"] == ["tech"]
 
 
 SAMPLE_HTML = """<!DOCTYPE html>
@@ -25,40 +80,15 @@ print("hello")
 
 def test_parse_basic():
     parser = WeChatParser()
-    body, meta, images = parser.parse(SAMPLE_HTML, url="https://mp.weixin.qq.com/s/test")
-
+    body, meta, images, raw_html = parser.parse(SAMPLE_HTML, url="https://mp.weixin.qq.com/s/test")
     assert meta.title == "测试文章标题"
     assert "这是一段测试正文" in body
     assert "print(" in body or "hello" in body
 
 
-def test_parse_no_content():
-    parser = WeChatParser()
-    with pytest.raises(ValueError):
-        parser.parse("<html><body><p>no content</p></body></html>")
-
-
-def test_article_meta_to_dict():
-    meta = ArticleMeta(title="T", author="A", date="2024-01-01",
-                       tags=["tech"], url="https://example.com")
-    d = meta.to_dict()
-    assert d["title"] == "T"
-    assert d["author"] == "A"
-    assert d["tags"] == ["tech"]
-
-
-def test_build_full_markdown():
-    parser = WeChatParser()
-    meta = ArticleMeta(title="测试", author="作者", url="https://mp.weixin.qq.com/s/x")
-    result = parser.build_full_markdown("正文内容", meta)
-    assert result.startswith("---")
-    assert "title: 测试" in result
-    assert "正文内容" in result
-
-
 def test_extract_images():
     parser = WeChatParser()
-    _, _, images = parser.parse(SAMPLE_HTML)
+    _, _, images, _ = parser.parse(SAMPLE_HTML)
     assert len(images) == 1
     assert "example.png" in images[0]
 
@@ -71,6 +101,15 @@ def test_image_cleanup():
     <img />
     </div></body></html>"""
     parser = WeChatParser()
-    _, _, images = parser.parse(html)
+    _, _, images, _ = parser.parse(html)
     assert len(images) == 2
     assert "a.png" in images[0]
+
+
+def test_build_full_markdown():
+    parser = WeChatParser()
+    meta = ArticleMeta(title="测试", author="作者", url="https://mp.weixin.qq.com/s/x")
+    result = parser.build_full_markdown("正文内容", meta)
+    assert result.startswith("---")
+    assert "title: 测试" in result
+    assert "正文内容" in result

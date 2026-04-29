@@ -61,9 +61,38 @@ class TestTemplateManager:
         tm = create_manager()
         assert tm._wrap_filter("hello") == '"hello"'
 
+    def test_truncate_filter(self):
+        tm = create_manager()
+        assert tm._truncate_filter("hello", 3) == "hel..."
+        assert tm._truncate_filter("hello", 10) == "hello"
+        assert tm._truncate_filter("hello world", 7) == "hello w..."
+
     def test_list_templates_shows_builtin_flag(self):
         tm = create_manager()
         for t in tm.list_templates():
             if t["name"] == "markdown":
                 assert t["builtin"] is True
                 break
+
+    def test_render_nonexistent_template_raises(self):
+        tm = create_manager()
+        with pytest.raises(ValueError, match="not found"):
+            tm.render("nonexistent.xyz", "body", {})
+
+    def test_html_dark_template(self):
+        tm = create_manager()
+        result = tm.render("html_dark.html", "<p>content</p>", SAMPLE_META)
+        assert "<html" in result
+        assert "content" in result
+
+    def test_html_modern_template(self):
+        tm = create_manager()
+        result = tm.render("html_modern.html", "<p>content</p>", SAMPLE_META)
+        assert "<html" in result
+        assert "content" in result
+
+    def test_html_print_template(self):
+        tm = create_manager()
+        result = tm.render("html_print.html", "<p>content</p>", SAMPLE_META)
+        assert "<html" in result
+        assert "content" in result

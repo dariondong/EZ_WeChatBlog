@@ -3,6 +3,8 @@ import base64
 import hashlib
 import hmac
 import logging
+import os
+import re
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -10,7 +12,7 @@ from urllib.parse import urlparse, quote
 
 import aiohttp
 
-from ez_wechatblog.utils import ensure_dir, get_ext_from_url
+from ez_wechatblog.utils import ensure_dir, get_ext_from_url, get_safe_filename
 
 logger = logging.getLogger(__name__)
 
@@ -34,19 +36,11 @@ class ImageHost(ABC):
         return {}
 
 
-class LocalImageMode:
-    name = "local"
-
-
-class Base64ImageMode:
-    name = "base64"
-
-
 class OSSImageHost(ImageHost):
     def __init__(self, endpoint: str = "", bucket: str = "",
                  access_key: str = "", secret_key: str = "",
                  path_prefix: str = "images"):
-        self.endpoint = endpoint.rstrip("/")
+        self.endpoint = endpoint.replace("https://", "").replace("http://", "").rstrip("/")
         self.bucket = bucket
         self.access_key = access_key
         self.secret_key = secret_key
@@ -69,17 +63,14 @@ class OSSImageHost(ImageHost):
         content_type = self._guess_content_type(filename)
         date = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
 
-        string_to_sign = (
-            f"PUT\n\n{content_type}\n{date}\n{resource}"
-        )
+        string_to_sign = f"PUT\n\n{content_type}\n{date}\n{resource}"
         signature = base64.b64encode(
             hmac.new(self.secret_key.encode(), string_to_sign.encode(),
                      hashlib.sha1).digest()
         ).decode()
 
-        url = f"{self.endpoint}{resource}"
+        url = f"https://{self.bucket}.{self.endpoint}/{self.path_prefix}/{filename}"
         headers = {
-            "Host": f"{self.bucket}.{self.endpoint.replace('https://', '').replace('http://', '')}",
             "Date": date,
             "Content-Type": content_type,
             "Authorization": f"OSS {self.access_key}:{signature}",
@@ -88,9 +79,8 @@ class OSSImageHost(ImageHost):
         async with session.put(url, data=image_data, headers=headers,
                                timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status == 200:
-                public_url = f"https://{self.bucket}.{self.endpoint.replace('https://', '').replace('http://', '')}/{self.path_prefix}/{filename}"
-                logger.info("OSS uploaded: %s", public_url)
-                return public_url
+                logger.info("OSS uploaded: %s", url)
+                return url
             body = await resp.text()
             raise RuntimeError(f"OSS upload failed: {resp.status} {body[:200]}")
 
@@ -98,12 +88,8 @@ class OSSImageHost(ImageHost):
     def _guess_content_type(filename: str) -> str:
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
         return {
-            "png": "image/png",
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "gif": "image/gif",
-            "webp": "image/webp",
-            "svg": "image/svg+xml",
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml",
             "bmp": "image/bmp",
         }.get(ext, "application/octet-stream")
 
@@ -135,10 +121,21 @@ class GitHubImageHost(ImageHost):
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json",
         }
+
+        sha = None
+        async with session.get(url, headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                sha = data.get("sha")
+
         payload = {"message": f"Upload {filename}", "content": encoded}
+        if sha:
+            payload["sha"] = sha
+
         async with session.put(url, json=payload, headers=headers,
                                timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status == 201:
+            if resp.status in (200, 201):
                 data = await resp.json()
                 return data["content"]["download_url"]
             body = await resp.text()
@@ -209,25 +206,34 @@ def build_host_config(host_type: str, cli_args: dict | None = None,
     config: dict = {}
 
     for key in host_cls.required_config():
-        val = cli_args.get(key) if cli_args else None
+        val = (cli_args or {}).get(key)
         if not val:
-            import os
             env_key = f"{env_prefix}_{host_type.upper()}_{key.upper()}"
             val = os.environ.get(env_key)
         if not val:
-            raise ValueError(f"Missing required config '{key}' for {host_type}. "
-                             f"Pass via --image-config or set {env_prefix}_{host_type.upper()}_{key.upper()}")
+            raise ValueError(
+                f"Missing required config '{key}' for {host_type}. "
+                f"Pass via --image-config or set {env_prefix}_{host_type.upper()}_{key.upper()}"
+            )
         config[key] = val
 
     for key, default in host_cls.optional_config().items():
-        val = (cli_args.get(key) if cli_args else None) or default
+        val = (cli_args or {}).get(key) or default
         if not val:
-            import os
             env_key = f"{env_prefix}_{host_type.upper()}_{key.upper()}"
             val = os.environ.get(env_key, default)
         config[key] = val
 
     return config
+
+
+def _guess_mime(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+    return {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml",
+        "bmp": "image/bmp",
+    }.get(ext, "image/png")
 
 
 class AssetManager:
@@ -291,31 +297,24 @@ class AssetManager:
                 return None
 
             ext = get_ext_from_url(url)
-            parsed = urlparse(url)
-            filename = parsed.path.split("/")[-1] or "image"
-            if "." not in filename:
-                filename = f"{filename}.{ext}"
+            filename = get_safe_filename(url, ext)
 
-            return await self._store_image(data, filename, url)
+            return await self._store_image(data, filename, url, session)
 
     async def _store_image(self, data: bytes, filename: str,
-                           original_url: str) -> tuple[str, str]:
+                           original_url: str,
+                           session: aiohttp.ClientSession | None = None) -> tuple[str, str]:
         if self.image_mode == "local":
             return await self._store_local(data, filename)
         elif self.image_mode == "base64":
             return await self._store_base64(data, filename)
         elif self.image_mode == "remote":
-            return await self._store_remote(data, filename)
+            return await self._store_remote(data, filename, session)
         return await self._store_local(data, filename)
 
     async def _store_local(self, data: bytes, filename: str) -> tuple[str, str]:
         ensure_dir(self.output_dir / self.assets_subdir)
         dest = self.assets_dir / filename
-        counter = 1
-        while dest.exists():
-            stem = dest.stem
-            dest = self.assets_dir / f"{stem}_{counter}{dest.suffix}"
-            counter += 1
         dest.write_bytes(data)
         relative = f"{self.assets_subdir}/{dest.name}"
         logger.info("Saved locally: %s", relative)
@@ -323,22 +322,27 @@ class AssetManager:
 
     async def _store_base64(self, data: bytes, filename: str) -> tuple[str, str]:
         encoded = base64.b64encode(data).decode()
-        ext = filename.rsplit(".", 1)[-1] if "." in filename else "png"
-        mime = f"image/{ext}"
+        mime = _guess_mime(filename)
         data_uri = f"data:{mime};base64,{encoded}"
         logger.info("Encoded base64: %s (%d bytes)", filename, len(encoded))
         return "", data_uri
 
-    async def _store_remote(self, data: bytes, filename: str) -> tuple[str, str]:
+    async def _store_remote(self, data: bytes, filename: str,
+                            session: aiohttp.ClientSession | None = None) -> tuple[str, str]:
         if self.image_host is None:
             raise RuntimeError("No image host configured for remote mode")
-        async with aiohttp.ClientSession() as session:
+        own_session = session is None
+        if own_session:
+            session = aiohttp.ClientSession()
+        try:
             url = await self.image_host.upload(data, filename, session=session)
-        logger.info("Uploaded: %s -> %s", filename, url)
-        return "", url
+            logger.info("Uploaded: %s -> %s", filename, url)
+            return "", url
+        finally:
+            if own_session:
+                await session.close()
 
     def rewrite_markdown_images(self, markdown: str) -> str:
-        import re
         pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
         def replacer(m: re.Match) -> str:
@@ -347,9 +351,6 @@ class AssetManager:
             local = self._mapping.get(original_url)
             if local:
                 return f"![{alt}]({local})"
-            for orig, local_path in self._mapping.items():
-                if orig.endswith(original_url) or original_url in orig:
-                    return f"![{alt}]({local_path})"
             return m.group(0)
 
         return pattern.sub(replacer, markdown)

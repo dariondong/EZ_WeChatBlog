@@ -28,3 +28,14 @@ class TestFetcherFactory:
 
     def test_camoufox_registered(self):
         assert "camoufox" in FetcherFactory._fetchers
+
+    def test_list(self):
+        fetchers = FetcherFactory.list()
+        assert isinstance(fetchers, list)
+        assert "playwright" in fetchers
+        assert "camoufox" in fetchers
+
+    def test_list_returns_copy(self):
+        fetchers = FetcherFactory.list()
+        fetchers.append("fake")
+        assert "fake" not in FetcherFactory.list()

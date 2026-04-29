@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 ez_wechatblog/__init__.py
+ez_wechatblog/__main__.py
 ez_wechatblog/cli.py
 ez_wechatblog/utils.py
 ez_wechatblog.egg-info/PKG-INFO
@@ -29,10 +30,13 @@ ez_wechatblog/publishers/base.py
 ez_wechatblog/publishers/hexo.py
 ez_wechatblog/publishers/hugo.py
 ez_wechatblog/publishers/local.py
+ez_wechatblog/templates/__init__.py
+ez_wechatblog/templates/manager.py
 tests/test_assets.py
 tests/test_fetcher.py
 tests/test_parser.py
 tests/test_parser_enhanced.py
 tests/test_publishers.py
 tests/test_publishers_hugo_hexo.py
+tests/test_templates.py
 tests/test_utils.py

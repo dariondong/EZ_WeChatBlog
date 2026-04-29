@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 380px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8f9fa;
+      color: #333;
+    }
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 16px;
+      text-align: center;
+    }
+    .header h1 { font-size: 18px; margin-bottom: 4px; }
+    .header p { font-size: 12px; opacity: 0.9; }
+    .content { padding: 16px; }
+    .form-group { margin-bottom: 12px; }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: #555;
+    }
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus, .form-group select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    .url-display {
+      background: #e9ecef;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      word-break: break-all;
+      margin-bottom: 12px;
+      min-height: 40px;
+    }
+    .url-display.valid { background: #d4edda; color: #155724; }
+    .url-display.invalid { background: #f8d7da; color: #721c24; }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102,126,234,0.4); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+    .options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .status.success { display: block; background: #d4edda; color: #155724; }
+    .status.error { display: block; background: #f8d7da; color: #721c24; }
+    .status.loading { display: block; background: #cce5ff; color: #004085; }
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid #004085;
+      border-radius: 50%;
+      border-top-color: transparent;
+      animation: spin 0.8s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .footer {
+      text-align: center;
+      padding: 8px;
+      font-size: 11px;
+      color: #999;
+      border-top: 1px solid #eee;
+    }
+    .footer a { color: #667eea; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>EZ WeChatBlog</h1>
+    <p>微信公众号文章 → Markdown/HTML</p>
+  </div>
+
+  <div class="content">
+    <div class="url-display" id="urlDisplay">
+      正在检测当前页面...
+    </div>
+
+    <div class="form-group">
+      <label>服务器地址</label>
+      <input type="text" id="serverUrl" value="http://localhost:5000" placeholder="http://localhost:5000">
+    </div>
+
+    <div class="options">
+      <div class="form-group">
+        <label>输出格式</label>
+        <select id="template">
+          <option value="">Markdown (默认)</option>
+          <option value="html.html.j2">HTML</option>
+          <option value="html_dark.html">HTML 暗色</option>
+          <option value="html_modern.html">HTML 现代</option>
+          <option value="html_print.html">HTML 打印</option>
+          <option value="minimal.md.j2">Markdown 极简</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>发布器</label>
+        <select id="publisher">
+          <option value="local">本地文件</option>
+          <option value="hugo">Hugo</option>
+          <option value="hexo">Hexo</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" id="convertBtn" disabled>
+      转换文章
+    </button>
+
+    <div class="status" id="status">
+      <span class="spinner" id="statusSpinner" style="display:none"></span>
+      <span id="statusText"></span>
+    </div>
+  </div>
+
+  <div class="footer">
+    EZ_WeChatBlog v1.0 | <a href="https://github.com/dariondong/EZ_WeChatBlog" target="_blank">GitHub</a>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

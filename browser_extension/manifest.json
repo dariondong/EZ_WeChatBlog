@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "EZ WeChatBlog",
+  "version": "1.0.0",
+  "description": "一键将微信公众号文章转换为 Markdown/HTML",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": [
+    "https://mp.weixin.qq.com/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "EZ WeChatBlog: 转换微信文章",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mp.weixin.qq.com/s/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class TemplateManager:
 
         self.env = Environment(
             loader=FileSystemLoader([str(p) for p in search_paths]),
-            autoescape=select_autoescape(["html", "xml"]),
+            autoescape=False,
             trim_blocks=True,
             lstrip_blocks=True,
         )
@@ -66,7 +66,13 @@ class TemplateManager:
     def render(self, template_name: str, body: str,
                metadata: dict, front_matter: str = "",
                footnotes: str = "") -> str:
-        tpl = self.env.get_template(template_name)
+        try:
+            tpl = self.env.get_template(template_name)
+        except TemplateNotFound:
+            available = [t["file"] for t in self.list_templates()]
+            raise ValueError(
+                f"Template '{template_name}' not found. Available: {available}"
+            )
         return tpl.render(
             body=body,
             metadata=metadata,
