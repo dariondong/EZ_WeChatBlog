@@ -19,3 +19,7 @@ class FetcherFactory:
             msg = f"Unknown fetcher '{name}'. Available: {available}"
             raise ValueError(msg)
         return cls._fetchers[name](**kwargs)
+
+    @classmethod
+    def list(cls) -> list[str]:
+        return list(cls._fetchers.keys())

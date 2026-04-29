@@ -1,4 +1,5 @@
 import logging
+import shutil
 from pathlib import Path
 
 from ez_wechatblog.publishers.base import Article, BasePublisher
@@ -21,8 +22,11 @@ class LocalPublisher(BasePublisher):
         slug = config.get("slug") or self.get_slug(article)
         article_dir = ensure_dir(output_dir / slug)
 
-        md_path = article_dir / "index.md"
-        md_path.write_text(article.markdown, encoding="utf-8")
+        try:
+            md_path = article_dir / "index.md"
+            md_path.write_text(article.markdown, encoding="utf-8")
+        except OSError as e:
+            raise RuntimeError(f"Failed to write {md_path}: {e}") from e
 
         if article.assets_dir and article.assets_dir.exists():
             dest_assets = ensure_dir(article_dir / "images")
@@ -30,8 +34,10 @@ class LocalPublisher(BasePublisher):
                 if f.is_file():
                     dest_path = dest_assets / f.name
                     if not dest_path.exists():
-                        import shutil
-                        shutil.copy2(f, dest_path)
+                        try:
+                            shutil.copy2(f, dest_path)
+                        except OSError as e:
+                            logger.warning("Failed to copy %s: %s", f, e)
 
         logger.info("Published to %s", article_dir)
         return {

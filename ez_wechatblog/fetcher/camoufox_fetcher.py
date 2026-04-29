@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from ez_wechatblog.fetcher.base import BaseFetcher
@@ -15,6 +14,7 @@ class CamoufoxFetcher(BaseFetcher):
         self._timeout = timeout
         self._geoip = geoip
         self._humanize = humanize
+        self._camoufox = None
         self._browser = None
 
     async def _ensure_browser(self):
@@ -34,8 +34,27 @@ class CamoufoxFetcher(BaseFetcher):
         }
         if self._geoip:
             kwargs["geoip"] = self._geoip
-        self._camoufox = AsyncCamoufox(**kwargs)
-        self._browser = await self._camoufox.start()
+
+        try:
+            self._camoufox = AsyncCamoufox(**kwargs)
+            self._browser = await self._camoufox.start()
+        except Exception:
+            await self._cleanup_partial()
+            raise
+
+    async def _cleanup_partial(self):
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._camoufox:
+            try:
+                await self._camoufox.stop()
+            except Exception:
+                pass
+            self._camoufox = None
 
     async def fetch(self, url: str) -> str:
         await self._ensure_browser()
@@ -50,6 +69,12 @@ class CamoufoxFetcher(BaseFetcher):
 
     async def close(self):
         if self._browser:
-            await self._browser.close()
-        if hasattr(self, "_camoufox"):
-            await self._camoufox.stop()
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+        if self._camoufox:
+            try:
+                await self._camoufox.stop()
+            except Exception:
+                pass

@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 import pluggy
 
@@ -37,10 +36,6 @@ class PluginManager:
 
     def list_publishers(self) -> list[str]:
         return list(self._builtin_publishers.keys())
-
-    def discover_plugins(self, plugin_dirs: list[Path] | None = None):
-        if not plugin_dirs:
-            return
 
     def publish(self, article: Article, publisher_name: str,
                 config: dict | None = None) -> dict:

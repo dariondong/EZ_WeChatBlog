@@ -1,6 +1,5 @@
 import re
 from datetime import datetime
-from pathlib import Path
 
 import yaml
 from bs4 import BeautifulSoup, Tag
@@ -33,12 +32,15 @@ class ArticleMeta:
 class WeChatParser:
     IMAGE_PATTERN = re.compile(r"<img[^>]+src=['\"]([^'\"]+)['\"]")
 
-    def parse(self, html: str, url: str = "") -> tuple[str, ArticleMeta, list[str]]:
+    def parse(self, html: str, url: str = "") -> tuple[str, ArticleMeta, list[str], str]:
+        if not html or not html.strip():
+            raise ValueError("HTML 内容为空")
+
         soup = BeautifulSoup(html, "html.parser")
 
         content = self._extract_content(soup)
         if content is None:
-            raise ValueError("Could not find article content (#js_content)")
+            raise ValueError("无法找到文章正文 (#js_content)，请检查 URL 是否为微信公众号文章")
 
         clean_code_snippets(content, soup=soup)
         clean_media_tags(content, soup=soup)
@@ -47,16 +49,19 @@ class WeChatParser:
         meta = self._extract_meta(soup, url)
         image_urls = self._extract_images(content)
 
-        markdown_body = self._to_markdown(str(content))
+        raw_html = str(content)
+        markdown_body = self._to_markdown(raw_html)
 
-        return markdown_body, meta, image_urls
+        return markdown_body, meta, image_urls, raw_html
 
     def _extract_content(self, soup: BeautifulSoup) -> Tag | None:
         content = soup.find("div", id="js_content")
-        if content is None:
+        if content is None or not isinstance(content, Tag):
             rich = soup.find("div", id="js_rich_content_container")
             if rich is not None and isinstance(rich, Tag):
                 content = rich
+            else:
+                return None
         return content
 
     def _extract_meta(self, soup: BeautifulSoup, url: str) -> ArticleMeta:
@@ -100,7 +105,7 @@ class WeChatParser:
         match = re.search(r"(\d{4}-\d{2}-\d{2})", date_str)
         if match:
             return match.group(1)
-        return date_str
+        return datetime.now().strftime("%Y-%m-%d")
 
     def _extract_images(self, content: Tag) -> list[str]:
         urls = []
@@ -124,8 +129,7 @@ class WeChatParser:
         text = re.sub(r"\n{4,}", "\n\n\n", text)
         return text
 
-    def build_full_markdown(self, body: str, meta: ArticleMeta,
-                            assets_dir: str = "images") -> str:
+    def build_full_markdown(self, body: str, meta: ArticleMeta) -> str:
         front_matter = yaml.dump(meta.to_dict(), allow_unicode=True,
                                  default_flow_style=False, sort_keys=False)
         return f"---\n{front_matter}---\n\n{body}\n"

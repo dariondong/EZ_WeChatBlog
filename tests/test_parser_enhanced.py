@@ -34,13 +34,14 @@ def hello():
 def test_parse_realistic_sample():
     from ez_wechatblog.parser.wechat_parser import WeChatParser
     parser = WeChatParser()
-    body, meta, images = parser.parse(WEIXIN_SAMPLE, url="https://mp.weixin.qq.com/s/test123")
+    body, meta, images, raw_html = parser.parse(WEIXIN_SAMPLE, url="https://mp.weixin.qq.com/s/test123")
 
     assert meta.title == "Python 进阶指南"
     assert "张三" in meta.author or not meta.author
     assert "Python" in body
     assert "print" in body or "hello" in body or "world" in body
     assert len(images) >= 1
+    assert "<div" in raw_html or "<p" in raw_html
 
 
 def test_inline_style_removed():

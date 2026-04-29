@@ -15,7 +15,7 @@ from ez_wechatblog.parser.wechat_parser import WeChatParser
 from ez_wechatblog.plugin_engine.manager import create_manager
 from ez_wechatblog.publishers.base import Article
 from ez_wechatblog.templates.manager import create_manager as create_template_manager
-from ez_wechatblog.utils import ensure_dir
+from ez_wechatblog.utils import ensure_dir, validate_url
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,10 +42,15 @@ def _parse_image_config(raw: str | None) -> dict:
             if "=" in pair:
                 k, v = pair.split("=", 1)
                 config[k.strip()] = v.strip()
+        if not config:
+            logger.warning("Failed to parse --image-config: %s", raw[:100])
         return config
 
 
 def _build_image_host(host_type: str, config: dict):
+    if host_type not in HOST_REGISTRY:
+        available = list(HOST_REGISTRY.keys())
+        raise ValueError(f"Unknown image host '{host_type}'. Available: {available}")
     host_config = build_host_config(host_type, cli_args=config)
     host_cls = HOST_REGISTRY[host_type]
     return host_cls(**host_config)
@@ -58,50 +63,79 @@ async def _convert_single(url: str, output_dir: Path, publisher_name: str,
                           image_host_config: dict | None,
                           template_name: str | None = None,
                           template_dir: Path | None = None) -> dict:
+    try:
+        url = validate_url(url)
+    except ValueError as e:
+        return {"url": url, "status": "error", "error": str(e)}
+
     output_dir = ensure_dir(output_dir)
 
     logger.info("Fetching article: %s", url)
-    fetcher = FetcherFactory.create(fetcher_name, headless=headless)
+    try:
+        fetcher = FetcherFactory.create(fetcher_name, headless=headless)
+    except Exception as e:
+        return {"url": url, "status": "error", "error": f"Fetcher error: {e}"}
     try:
         html = await fetcher.fetch(url)
     except ImportError as e:
-        logger.error("Fetcher error: %s", e)
-        return {"url": url, "status": "error", "error": str(e)}
+        return {"url": url, "status": "error", "error": f"Fetcher not available: {e}"}
+    except Exception as e:
+        return {"url": url, "status": "error", "error": f"Fetch failed: {e}"}
     finally:
-        await fetcher.close()
+        try:
+            await fetcher.close()
+        except Exception:
+            pass
 
     logger.info("Parsing HTML...")
     parser = WeChatParser()
-    markdown_body, meta, image_urls = parser.parse(html, url=url)
+    try:
+        markdown_body, meta, image_urls, raw_html = parser.parse(html, url=url)
+    except ValueError as e:
+        return {"url": url, "status": "error", "error": f"Parse failed: {e}"}
+    except Exception as e:
+        return {"url": url, "status": "error", "error": f"Parse error: {e}"}
 
     assets_dir = None
     if download_images and image_urls:
         logger.info("Processing %d images (mode: %s)...", len(image_urls), image_mode)
-        host = None
-        if image_mode == "remote" and image_host_type:
-            host = _build_image_host(image_host_type, image_host_config or {})
-        am = AssetManager(output_dir, assets_subdir="images", referer=url,
-                          image_mode=image_mode, image_host=host)
-        await am.download_all(image_urls)
-        markdown_body = am.rewrite_markdown_images(markdown_body)
-        assets_dir = am.assets_dir
+        try:
+            host = None
+            if image_mode == "remote" and image_host_type:
+                host = _build_image_host(image_host_type, image_host_config or {})
+            am = AssetManager(output_dir, assets_subdir="images", referer=url,
+                              image_mode=image_mode, image_host=host)
+            await am.download_all(image_urls)
+            markdown_body = am.rewrite_markdown_images(markdown_body)
+            assets_dir = am.assets_dir
+        except Exception as e:
+            logger.warning("Image processing failed: %s", e)
     elif image_urls:
         logger.info("Skipping image download (%d images found)", len(image_urls))
 
-    if template_name:
-        custom_dirs = [template_dir] if template_dir else None
-        tm = create_template_manager(custom_dirs)
-        rendered = tm.render(template_name, markdown_body, meta.to_dict())
-    else:
-        rendered = parser.build_full_markdown(markdown_body, meta)
+    try:
+        if template_name:
+            custom_dirs = [template_dir] if template_dir else None
+            tm = create_template_manager(custom_dirs)
+            if template_name.endswith(".html"):
+                rendered = tm.render(template_name, raw_html, meta.to_dict())
+            else:
+                rendered = tm.render(template_name, markdown_body, meta.to_dict())
+        else:
+            rendered = parser.build_full_markdown(markdown_body, meta)
+    except Exception as e:
+        return {"url": url, "status": "error", "error": f"Template render failed: {e}"}
 
     article = Article(markdown=rendered, metadata=meta.to_dict(),
                       assets_dir=assets_dir)
 
     pm = create_manager()
-    result = pm.publish(article, publisher_name, config={
-        "output_dir": str(output_dir),
-    })
+    try:
+        result = pm.publish(article, publisher_name, config={
+            "output_dir": str(output_dir),
+        })
+    except Exception as e:
+        return {"url": url, "status": "error", "error": f"Publish failed: {e}"}
 
     slug = result.get("slug", "?")
     path = result.get("path", "?")
@@ -143,11 +177,11 @@ def convert(
         ),
         image_config: str = typer.Option(
             None, "--image-config",
-            help='图床配置 JSON 或 key=val,key=val（如 \'{"endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"my-bucket","access_key":"xxx","secret_key":"xxx"}\'）',
+            help='图床配置 JSON 或 key=val',
         ),
         template: str = typer.Option(
             None, "-t", "--template",
-            help="输出模板文件名 (如 markdown.md.j2, html.html.j2)",
+            help="输出模板文件名",
         ),
         template_dir: Path = typer.Option(
             None, "--template-dir",
@@ -219,7 +253,7 @@ def batch(
         ),
         image_config: str = typer.Option(
             None, "--image-config",
-            help="图床配置 JSON 或 key=val,key=val",
+            help="图床配置 JSON 或 key=val",
         ),
         template: str = typer.Option(
             None, "-t", "--template",
@@ -233,6 +267,7 @@ def batch(
         max_concurrent: int = typer.Option(
             3, "-j", "--max-concurrent",
             help="最大并发数",
+            min=1,
         ),
         verbose: bool = typer.Option(
             False, "-v", "--verbose",
@@ -282,16 +317,23 @@ def batch(
 
     async def run_all():
         tasks = [limited_convert(url) for url in all_urls]
-        results = await asyncio.gather(*tasks)
-        return results
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
     results = asyncio.run(run_all())
 
-    ok = [r for r in results if r.get("status") == "ok"]
-    failed = [r for r in results if r.get("status") != "ok"]
+    ok = []
+    failed = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            failed.append({"url": all_urls[i], "error": str(result)})
+        elif isinstance(result, dict) and result.get("status") == "ok":
+            ok.append(result)
+        else:
+            failed.append(result if isinstance(result, dict) else {"url": all_urls[i], "error": str(result)})
+
     typer.echo(f"\nDone: {len(ok)} succeeded, {len(failed)} failed")
     for r in failed:
-        typer.echo(f"  FAIL: {r['url']} - {r.get('error', 'unknown')}")
+        typer.echo(f"  FAIL: {r.get('url', '?')} - {r.get('error', 'unknown')}")
 
 
 @app.command("list-templates")
@@ -314,9 +356,31 @@ def list_publishers():
 @app.command()
 def list_fetchers():
     """列出所有可用的抓取器"""
-    from ez_wechatblog.fetcher.factory import FetcherFactory
-    for name in FetcherFactory._fetchers:
+    for name in FetcherFactory.list():
         typer.echo(f"  - {name}")
+
+
+@app.command()
+def serve(
+        host: str = typer.Option(
+            "0.0.0.0", "--host",
+            help="绑定地址",
+        ),
+        port: int = typer.Option(
+            5000, "--port",
+            help="绑定端口",
+        ),
+        debug: bool = typer.Option(
+            False, "--debug",
+            help="调试模式",
+        ),
+):
+    """启动 HTTP API 服务器"""
+    from ez_wechatblog.server import create_app
+    typer.echo(f"Starting EZ_WeChatBlog API server on {host}:{port}")
+    typer.echo(f"API docs: http://{host}:{port}/")
+    app = create_app()
+    app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":
