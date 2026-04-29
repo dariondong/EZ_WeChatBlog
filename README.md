@@ -1,9 +1,124 @@
 # EZ_WeChatBlog
 
-> **Status**: 🚧 Design & Prototype Phase — 架构设计与核心模块验证中  
-> **Goal**: 微信公众号文章 → 通用 Markdown / 多平台博客后端，插件化、可扩展、AI-Agent 友好
+> **阶段**: MVP (最小可行产品) — 核心链路已跑通  
+> **目标**: 微信公众号文章 → 标准 Markdown，一键本地归档
 
 ---
+
+## 安装
+
+```bash
+# 克隆仓库
+git clone https://github.com/yourname/EZ_WeChatBlog.git
+cd EZ_WeChatBlog
+
+# 创建虚拟环境
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Linux/Mac
+# source .venv/bin/activate
+
+# 安装项目（开发模式）
+pip install -e ".[dev,fetcher]"
+
+# 安装 Playwright 浏览器
+playwright install chromium
+```
+
+## 使用
+
+### 单篇文章转换
+
+```bash
+ez-wc convert "https://mp.weixin.qq.com/s/xxxxx" -o ./output
+```
+
+选项:
+- `-o` / `--output`: 输出目录 (默认 `./output`)
+- `--show`: 显示浏览器窗口（调试用，默认无头模式）
+- `--no-images`: 跳过图片下载
+- `-v`: 详细日志
+
+### 查看可用发布器
+
+```bash
+ez-wc list-publishers
+```
+
+## 输出示例
+
+```
+output/
+└── 文章标题/
+    ├── index.md        # Markdown 文件（含 YAML Front Matter）
+    └── images/         # 本地化图片资源
+        ├── xxx.png
+        └── yyy.jpg
+```
+
+生成的 `index.md`:
+
+```markdown
+---
+title: 文章标题
+author: 作者名
+date: 2026-04-29
+tags: []
+url: https://mp.weixin.qq.com/s/xxxxx
+---
+
+正文内容...
+
+![图片](images/xxx.png)
+```
+
+## 项目结构
+
+```
+EZ_WeChatBlog/
+├── ez_wechatblog/
+│   ├── cli.py                   # 命令行入口 (Typer)
+│   ├── utils.py                 # 工具函数
+│   ├── fetcher/                 # 抓取模块
+│   │   ├── base.py              #   抽象基类
+│   │   ├── factory.py           #   工厂模式注册
+│   │   └── playwright_fetcher.py #   Playwright 实现
+│   ├── parser/                  # 解析模块
+│   │   ├── wechat_parser.py     #   HTML → Markdown
+│   │   └── cleaners/            #   标签清洗器
+│   │       ├── code_snippet.py  #     代码块处理
+│   │       └── media_tag.py     #     视频/音频/图片处理
+│   ├── assets/                  # 资源管理
+│   │   └── manager.py           #   异步下载 + 路径重写
+│   ├── publishers/              # 发布器
+│   │   ├── base.py              #   抽象基类
+│   │   └── local.py             #   本地文件发布
+│   └── plugin_engine/           # 插件引擎
+│       └── manager.py           #   Pluggy 管理
+├── tests/                       # 测试 (28 个，全部通过)
+├── pyproject.toml
+└── README.md
+```
+
+## 开发
+
+```bash
+# 运行测试
+pytest tests/ -v
+
+# 测试覆盖率
+pip install pytest-cov
+pytest tests/ --cov=ez_wechatblog
+```
+
+## 路线图
+
+- **Phase 2**: Camoufox 抓取、批量处理、Cookie 池
+- **Phase 3**: Hugo/Hexo/Notion 发布器插件
+- **Phase 4**: AI 自动标签、GitHub Actions 定时同步
+
+
 
 ## 项目定位
 
