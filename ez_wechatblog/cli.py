@@ -1,14 +1,20 @@
 import asyncio
+import json
 import logging
 from pathlib import Path
 
 import typer
 
-from ez_wechatblog.assets.manager import AssetManager
+import ez_wechatblog.fetcher.playwright_fetcher  # noqa: register
+import ez_wechatblog.fetcher.camoufox_fetcher  # noqa: register
+from ez_wechatblog.assets.manager import (
+    AssetManager, HOST_REGISTRY, build_host_config,
+)
 from ez_wechatblog.fetcher.factory import FetcherFactory
 from ez_wechatblog.parser.wechat_parser import WeChatParser
 from ez_wechatblog.plugin_engine.manager import create_manager
 from ez_wechatblog.publishers.base import Article
+from ez_wechatblog.templates.manager import create_manager as create_template_manager
 from ez_wechatblog.utils import ensure_dir
 
 logging.basicConfig(
@@ -25,6 +31,84 @@ app = typer.Typer(
 )
 
 
+def _parse_image_config(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        config = {}
+        for pair in raw.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                config[k.strip()] = v.strip()
+        return config
+
+
+def _build_image_host(host_type: str, config: dict):
+    host_config = build_host_config(host_type, cli_args=config)
+    host_cls = HOST_REGISTRY[host_type]
+    return host_cls(**host_config)
+
+
+async def _convert_single(url: str, output_dir: Path, publisher_name: str,
+                          fetcher_name: str, headless: bool,
+                          download_images: bool, image_mode: str,
+                          image_host_type: str | None,
+                          image_host_config: dict | None,
+                          template_name: str | None = None,
+                          template_dir: Path | None = None) -> dict:
+    output_dir = ensure_dir(output_dir)
+
+    logger.info("Fetching article: %s", url)
+    fetcher = FetcherFactory.create(fetcher_name, headless=headless)
+    try:
+        html = await fetcher.fetch(url)
+    except ImportError as e:
+        logger.error("Fetcher error: %s", e)
+        return {"url": url, "status": "error", "error": str(e)}
+    finally:
+        await fetcher.close()
+
+    logger.info("Parsing HTML...")
+    parser = WeChatParser()
+    markdown_body, meta, image_urls = parser.parse(html, url=url)
+
+    assets_dir = None
+    if download_images and image_urls:
+        logger.info("Processing %d images (mode: %s)...", len(image_urls), image_mode)
+        host = None
+        if image_mode == "remote" and image_host_type:
+            host = _build_image_host(image_host_type, image_host_config or {})
+        am = AssetManager(output_dir, assets_subdir="images", referer=url,
+                          image_mode=image_mode, image_host=host)
+        await am.download_all(image_urls)
+        markdown_body = am.rewrite_markdown_images(markdown_body)
+        assets_dir = am.assets_dir
+    elif image_urls:
+        logger.info("Skipping image download (%d images found)", len(image_urls))
+
+    if template_name:
+        custom_dirs = [template_dir] if template_dir else None
+        tm = create_template_manager(custom_dirs)
+        rendered = tm.render(template_name, markdown_body, meta.to_dict())
+    else:
+        rendered = parser.build_full_markdown(markdown_body, meta)
+
+    article = Article(markdown=rendered, metadata=meta.to_dict(),
+                      assets_dir=assets_dir)
+
+    pm = create_manager()
+    result = pm.publish(article, publisher_name, config={
+        "output_dir": str(output_dir),
+    })
+
+    slug = result.get("slug", "?")
+    path = result.get("path", "?")
+    logger.info("Done: %s -> %s", slug, path)
+    return {"url": url, "status": "ok", "slug": slug, "path": path}
+
+
 @app.command()
 def convert(
         url: str = typer.Argument(..., help="微信公众号文章 URL"),
@@ -35,7 +119,11 @@ def convert(
         ),
         publisher: str = typer.Option(
             "local", "-p", "--publisher",
-            help="发布器名称 (local/hugo/hexo/...)",
+            help="发布器名称 (local/hugo/hexo)",
+        ),
+        fetcher: str = typer.Option(
+            "playwright", "--fetcher",
+            help="抓取器 (playwright/camoufox)",
         ),
         headless: bool = typer.Option(
             True, "--headless/--show",
@@ -45,59 +133,174 @@ def convert(
             True, "--images/--no-images",
             help="是否下载图片",
         ),
+        image_mode: str = typer.Option(
+            "local", "--image-mode",
+            help="图片模式 (local/base64/remote)",
+        ),
+        image_host: str = typer.Option(
+            None, "--image-host",
+            help="图床类型 (oss/github/cloudinary)",
+        ),
+        image_config: str = typer.Option(
+            None, "--image-config",
+            help='图床配置 JSON 或 key=val,key=val（如 \'{"endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"my-bucket","access_key":"xxx","secret_key":"xxx"}\'）',
+        ),
+        template: str = typer.Option(
+            None, "-t", "--template",
+            help="输出模板文件名 (如 markdown.md.j2, html.html.j2)",
+        ),
+        template_dir: Path = typer.Option(
+            None, "--template-dir",
+            help="自定义模板目录",
+            file_okay=False, dir_okay=True,
+        ),
         verbose: bool = typer.Option(
             False, "-v", "--verbose",
             help="详细日志输出",
         ),
 ):
-    """将微信公众号文章转换为 Markdown 并发布"""
+    """将单篇微信公众号文章转换为 Markdown 并发布"""
     if verbose:
         logging.getLogger("ez_wechatblog").setLevel(logging.DEBUG)
 
-    asyncio.run(_do_convert(
-        url=url,
-        output_dir=output,
-        publisher_name=publisher,
-        headless=headless,
-        download_images=download_images,
+    if image_mode == "remote" and not image_host:
+        typer.echo("Error: --image-host is required when --image-mode=remote", err=True)
+        raise typer.Exit(1)
+
+    result = asyncio.run(_convert_single(
+        url=url, output_dir=output, publisher_name=publisher,
+        fetcher_name=fetcher, headless=headless,
+        download_images=download_images, image_mode=image_mode,
+        image_host_type=image_host,
+        image_host_config=_parse_image_config(image_config),
+        template_name=template, template_dir=template_dir,
     ))
+    if result.get("status") == "error":
+        typer.echo(f"Error: {result['error']}", err=True)
+        raise typer.Exit(1)
 
 
-async def _do_convert(url: str, output_dir: Path, publisher_name: str,
-                      headless: bool, download_images: bool):
-    output_dir = ensure_dir(output_dir)
+@app.command()
+def batch(
+        urls: list[str] = typer.Argument(None, help="URL 列表或文件路径"),
+        url_file: Path = typer.Option(
+            None, "-f", "--url-file",
+            help="URL 文件（每行一个 URL 或 JSON 数组）",
+            exists=True, file_okay=True, dir_okay=False,
+        ),
+        output: Path = typer.Option(
+            "./output", "-o", "--output",
+            help="输出目录",
+            file_okay=False, dir_okay=True,
+        ),
+        publisher: str = typer.Option(
+            "local", "-p", "--publisher",
+            help="发布器名称 (local/hugo/hexo)",
+        ),
+        fetcher: str = typer.Option(
+            "playwright", "--fetcher",
+            help="抓取器 (playwright/camoufox)",
+        ),
+        headless: bool = typer.Option(
+            True, "--headless/--show",
+            help="是否使用无头浏览器",
+        ),
+        download_images: bool = typer.Option(
+            True, "--images/--no-images",
+            help="是否下载图片",
+        ),
+        image_mode: str = typer.Option(
+            "local", "--image-mode",
+            help="图片模式 (local/base64/remote)",
+        ),
+        image_host: str = typer.Option(
+            None, "--image-host",
+            help="图床类型 (oss/github/cloudinary)",
+        ),
+        image_config: str = typer.Option(
+            None, "--image-config",
+            help="图床配置 JSON 或 key=val,key=val",
+        ),
+        template: str = typer.Option(
+            None, "-t", "--template",
+            help="输出模板文件名",
+        ),
+        template_dir: Path = typer.Option(
+            None, "--template-dir",
+            help="自定义模板目录",
+            file_okay=False, dir_okay=True,
+        ),
+        max_concurrent: int = typer.Option(
+            3, "-j", "--max-concurrent",
+            help="最大并发数",
+        ),
+        verbose: bool = typer.Option(
+            False, "-v", "--verbose",
+            help="详细日志输出",
+        ),
+):
+    """批量转换多篇微信公众号文章"""
+    if verbose:
+        logging.getLogger("ez_wechatblog").setLevel(logging.DEBUG)
 
-    logger.info("Fetching article: %s", url)
-    fetcher = FetcherFactory.create("playwright", headless=headless)
-    try:
-        html = await fetcher.fetch(url)
-    finally:
-        await fetcher.close()
+    if image_mode == "remote" and not image_host:
+        typer.echo("Error: --image-host is required when --image-mode=remote", err=True)
+        raise typer.Exit(1)
 
-    logger.info("Parsing HTML...")
-    parser = WeChatParser()
-    markdown_body, meta, image_urls = parser.parse(html, url=url)
+    all_urls: list[str] = []
+    if urls:
+        all_urls.extend(urls)
+    if url_file:
+        content = url_file.read_text(encoding="utf-8")
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, list):
+                all_urls.extend(parsed)
+            elif isinstance(parsed, dict) and "urls" in parsed:
+                all_urls.extend(parsed["urls"])
+        except json.JSONDecodeError:
+            all_urls.extend(line.strip() for line in content.splitlines() if line.strip())
 
-    assets_dir = None
-    if download_images and image_urls:
-        logger.info("Downloading %d images...", len(image_urls))
-        am = AssetManager(output_dir, assets_subdir="images", referer=url)
-        await am.download_all(image_urls)
-        markdown_body = am.rewrite_markdown_images(markdown_body)
-        assets_dir = am.assets_dir
-    elif image_urls:
-        logger.info("Skipping image download (%d images found)", len(image_urls))
+    if not all_urls:
+        typer.echo("Error: No URLs provided. Pass URLs as arguments or use -f/--url-file", err=True)
+        raise typer.Exit(1)
 
-    full_md = parser.build_full_markdown(markdown_body, meta)
-    article = Article(markdown=full_md, metadata=meta.to_dict(),
-                      assets_dir=assets_dir)
+    typer.echo(f"Converting {len(all_urls)} articles (max {max_concurrent} concurrent)...")
 
-    pm = create_manager()
-    result = pm.publish(article, publisher_name, config={
-        "output_dir": str(output_dir),
-    })
+    sem = asyncio.Semaphore(max_concurrent)
 
-    logger.info("Done! Published to: %s", result.get("path", "?"))
+    async def limited_convert(url: str) -> dict:
+        async with sem:
+            return await _convert_single(
+                url=url, output_dir=output, publisher_name=publisher,
+                fetcher_name=fetcher, headless=headless,
+                download_images=download_images, image_mode=image_mode,
+                image_host_type=image_host,
+                image_host_config=_parse_image_config(image_config),
+                template_name=template, template_dir=template_dir,
+            )
+
+    async def run_all():
+        tasks = [limited_convert(url) for url in all_urls]
+        results = await asyncio.gather(*tasks)
+        return results
+
+    results = asyncio.run(run_all())
+
+    ok = [r for r in results if r.get("status") == "ok"]
+    failed = [r for r in results if r.get("status") != "ok"]
+    typer.echo(f"\nDone: {len(ok)} succeeded, {len(failed)} failed")
+    for r in failed:
+        typer.echo(f"  FAIL: {r['url']} - {r.get('error', 'unknown')}")
+
+
+@app.command("list-templates")
+def list_templates_cmd():
+    """列出所有可用的输出模板"""
+    tm = create_template_manager()
+    for t in tm.list_templates():
+        tag = " [built-in]" if t["builtin"] else ""
+        typer.echo(f"  - {t['name']:<25} {t['file']}{tag}")
 
 
 @app.command()
@@ -105,6 +308,14 @@ def list_publishers():
     """列出所有可用的发布器"""
     pm = create_manager()
     for name in pm.list_publishers():
+        typer.echo(f"  - {name}")
+
+
+@app.command()
+def list_fetchers():
+    """列出所有可用的抓取器"""
+    from ez_wechatblog.fetcher.factory import FetcherFactory
+    for name in FetcherFactory._fetchers:
         typer.echo(f"  - {name}")
 
 

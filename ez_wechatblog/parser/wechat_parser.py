@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup, Tag
 from markdownify import markdownify as md
 
 from ez_wechatblog.parser.cleaners.code_snippet import clean_code_snippets
+from ez_wechatblog.parser.cleaners.generic import full_clean
 from ez_wechatblog.parser.cleaners.media_tag import clean_media_tags
 
 
@@ -40,7 +41,8 @@ class WeChatParser:
             raise ValueError("Could not find article content (#js_content)")
 
         clean_code_snippets(content, soup=soup)
-        clean_media_tags(content)
+        clean_media_tags(content, soup=soup)
+        full_clean(content)
 
         meta = self._extract_meta(soup, url)
         image_urls = self._extract_images(content)

@@ -1,7 +1,12 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import logging
+import time
+from abc import ABC, abstractmethod
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 import aiohttp
 
@@ -10,15 +15,237 @@ from ez_wechatblog.utils import ensure_dir, get_ext_from_url
 logger = logging.getLogger(__name__)
 
 
+class ImageHost(ABC):
+    @abstractmethod
+    def get_name(self) -> str:
+        ...
+
+    @abstractmethod
+    async def upload(self, image_data: bytes, filename: str,
+                     session: aiohttp.ClientSession) -> str:
+        ...
+
+    @classmethod
+    def required_config(cls) -> list[str]:
+        return []
+
+    @classmethod
+    def optional_config(cls) -> dict[str, str]:
+        return {}
+
+
+class LocalImageMode:
+    name = "local"
+
+
+class Base64ImageMode:
+    name = "base64"
+
+
+class OSSImageHost(ImageHost):
+    def __init__(self, endpoint: str = "", bucket: str = "",
+                 access_key: str = "", secret_key: str = "",
+                 path_prefix: str = "images"):
+        self.endpoint = endpoint.rstrip("/")
+        self.bucket = bucket
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.path_prefix = path_prefix
+
+    def get_name(self) -> str:
+        return "oss"
+
+    @classmethod
+    def required_config(cls) -> list[str]:
+        return ["endpoint", "bucket", "access_key", "secret_key"]
+
+    @classmethod
+    def optional_config(cls) -> dict[str, str]:
+        return {"path_prefix": "images"}
+
+    async def upload(self, image_data: bytes, filename: str,
+                     session: aiohttp.ClientSession) -> str:
+        resource = f"/{self.bucket}/{self.path_prefix}/{filename}"
+        content_type = self._guess_content_type(filename)
+        date = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
+
+        string_to_sign = (
+            f"PUT\n\n{content_type}\n{date}\n{resource}"
+        )
+        signature = base64.b64encode(
+            hmac.new(self.secret_key.encode(), string_to_sign.encode(),
+                     hashlib.sha1).digest()
+        ).decode()
+
+        url = f"{self.endpoint}{resource}"
+        headers = {
+            "Host": f"{self.bucket}.{self.endpoint.replace('https://', '').replace('http://', '')}",
+            "Date": date,
+            "Content-Type": content_type,
+            "Authorization": f"OSS {self.access_key}:{signature}",
+        }
+
+        async with session.put(url, data=image_data, headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status == 200:
+                public_url = f"https://{self.bucket}.{self.endpoint.replace('https://', '').replace('http://', '')}/{self.path_prefix}/{filename}"
+                logger.info("OSS uploaded: %s", public_url)
+                return public_url
+            body = await resp.text()
+            raise RuntimeError(f"OSS upload failed: {resp.status} {body[:200]}")
+
+    @staticmethod
+    def _guess_content_type(filename: str) -> str:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+        return {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "webp": "image/webp",
+            "svg": "image/svg+xml",
+            "bmp": "image/bmp",
+        }.get(ext, "application/octet-stream")
+
+
+class GitHubImageHost(ImageHost):
+    def __init__(self, repo: str = "", token: str = "",
+                 path_prefix: str = "images"):
+        self.repo = repo
+        self.token = token
+        self.path_prefix = path_prefix
+
+    def get_name(self) -> str:
+        return "github"
+
+    @classmethod
+    def required_config(cls) -> list[str]:
+        return ["repo", "token"]
+
+    @classmethod
+    def optional_config(cls) -> dict[str, str]:
+        return {"path_prefix": "images"}
+
+    async def upload(self, image_data: bytes, filename: str,
+                     session: aiohttp.ClientSession) -> str:
+        gh_path = f"{self.path_prefix}/{filename}"
+        url = f"https://api.github.com/repos/{self.repo}/contents/{gh_path}"
+        encoded = base64.b64encode(image_data).decode()
+        headers = {
+            "Authorization": f"token {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        payload = {"message": f"Upload {filename}", "content": encoded}
+        async with session.put(url, json=payload, headers=headers,
+                               timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status == 201:
+                data = await resp.json()
+                return data["content"]["download_url"]
+            body = await resp.text()
+            raise RuntimeError(f"GitHub upload failed: {resp.status} {body[:200]}")
+
+
+class CloudinaryImageHost(ImageHost):
+    def __init__(self, cloud_name: str = "", api_key: str = "",
+                 api_secret: str = "", upload_preset: str = ""):
+        self.cloud_name = cloud_name
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.upload_preset = upload_preset
+
+    def get_name(self) -> str:
+        return "cloudinary"
+
+    @classmethod
+    def required_config(cls) -> list[str]:
+        return ["cloud_name"]
+
+    @classmethod
+    def optional_config(cls) -> dict[str, str]:
+        return {"api_key": "", "api_secret": "", "upload_preset": "unsigned"}
+
+    async def upload(self, image_data: bytes, filename: str,
+                     session: aiohttp.ClientSession) -> str:
+        url = f"https://api.cloudinary.com/v1_1/{self.cloud_name}/image/upload"
+        data = aiohttp.FormData()
+        data.add_field("file", image_data, filename=filename,
+                       content_type="application/octet-stream")
+
+        if self.api_key and self.api_secret:
+            timestamp = str(int(time.time()))
+            params_to_sign = f"timestamp={timestamp}{self.api_secret}"
+            signature = hashlib.sha1(params_to_sign.encode()).hexdigest()
+            data.add_field("api_key", self.api_key)
+            data.add_field("timestamp", timestamp)
+            data.add_field("signature", signature)
+        elif self.upload_preset:
+            data.add_field("upload_preset", self.upload_preset)
+        else:
+            data.add_field("upload_preset", "unsigned")
+
+        async with session.post(url, data=data,
+                                timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                return result["secure_url"]
+            body = await resp.text()
+            raise RuntimeError(f"Cloudinary upload failed: {resp.status} {body[:200]}")
+
+
+HOST_REGISTRY: dict[str, type[ImageHost]] = {
+    "oss": OSSImageHost,
+    "github": GitHubImageHost,
+    "cloudinary": CloudinaryImageHost,
+}
+
+
+def build_host_config(host_type: str, cli_args: dict | None = None,
+                      env_prefix: str = "EZ_WC_IMG") -> dict:
+    if host_type not in HOST_REGISTRY:
+        available = list(HOST_REGISTRY.keys())
+        raise ValueError(f"Unknown host '{host_type}'. Available: {available}")
+
+    host_cls = HOST_REGISTRY[host_type]
+    config: dict = {}
+
+    for key in host_cls.required_config():
+        val = cli_args.get(key) if cli_args else None
+        if not val:
+            import os
+            env_key = f"{env_prefix}_{host_type.upper()}_{key.upper()}"
+            val = os.environ.get(env_key)
+        if not val:
+            raise ValueError(f"Missing required config '{key}' for {host_type}. "
+                             f"Pass via --image-config or set {env_prefix}_{host_type.upper()}_{key.upper()}")
+        config[key] = val
+
+    for key, default in host_cls.optional_config().items():
+        val = (cli_args.get(key) if cli_args else None) or default
+        if not val:
+            import os
+            env_key = f"{env_prefix}_{host_type.upper()}_{key.upper()}"
+            val = os.environ.get(env_key, default)
+        config[key] = val
+
+    return config
+
+
 class AssetManager:
     def __init__(self, output_dir: Path, assets_subdir: str = "images",
-                 max_concurrent: int = 5, referer: str = ""):
+                 max_concurrent: int = 5, referer: str = "",
+                 image_mode: str = "local", image_host: ImageHost | None = None):
         self.output_dir = output_dir
-        self.assets_dir = ensure_dir(output_dir / assets_subdir)
         self.assets_subdir = assets_subdir
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.referer = referer
+        self.image_mode = image_mode
+        self.image_host = image_host
         self._mapping: dict[str, str] = {}
+
+        if image_mode == "local":
+            self.assets_dir = ensure_dir(output_dir / assets_subdir)
+        else:
+            self.assets_dir = output_dir / assets_subdir
 
     @property
     def mapping(self) -> dict[str, str]:
@@ -36,35 +263,22 @@ class AssetManager:
 
         async with aiohttp.ClientSession(connector=connector,
                                          headers=headers) as session:
-            tasks = [self._download_one(session, url) for url in urls]
+            tasks = [self._process_one(session, url) for url in urls]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         downloaded = []
         for url, result in zip(urls, results):
             if isinstance(result, Exception):
-                logger.warning("Failed to download %s: %s", url, result)
+                logger.warning("Failed to process %s: %s", url, result)
                 continue
             if result:
                 downloaded.append(result)
                 self._mapping[url] = result[1]
         return downloaded
 
-    async def _download_one(self, session: aiohttp.ClientSession,
-                            url: str) -> tuple[str, str] | None:
+    async def _process_one(self, session: aiohttp.ClientSession,
+                           url: str) -> tuple[str, str] | None:
         async with self.semaphore:
-            ext = get_ext_from_url(url)
-            parsed = urlparse(url)
-            filename = parsed.path.split("/")[-1] or f"image"
-            if "." not in filename:
-                filename = f"{filename}.{ext}"
-            dest = self.assets_dir / filename
-
-            counter = 1
-            while dest.exists():
-                stem = dest.stem
-                dest = self.assets_dir / f"{stem}_{counter}{dest.suffix}"
-                counter += 1
-
             try:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(
                         total=30)) as resp:
@@ -72,13 +286,56 @@ class AssetManager:
                         logger.warning("HTTP %d for %s", resp.status, url)
                         return None
                     data = await resp.read()
-                    dest.write_bytes(data)
-                    relative = f"{self.assets_subdir}/{dest.name}"
-                    logger.info("Downloaded: %s -> %s", url[:60], relative)
-                    return url, relative
             except Exception as e:
                 logger.error("Download error for %s: %s", url[:60], e)
                 return None
+
+            ext = get_ext_from_url(url)
+            parsed = urlparse(url)
+            filename = parsed.path.split("/")[-1] or "image"
+            if "." not in filename:
+                filename = f"{filename}.{ext}"
+
+            return await self._store_image(data, filename, url)
+
+    async def _store_image(self, data: bytes, filename: str,
+                           original_url: str) -> tuple[str, str]:
+        if self.image_mode == "local":
+            return await self._store_local(data, filename)
+        elif self.image_mode == "base64":
+            return await self._store_base64(data, filename)
+        elif self.image_mode == "remote":
+            return await self._store_remote(data, filename)
+        return await self._store_local(data, filename)
+
+    async def _store_local(self, data: bytes, filename: str) -> tuple[str, str]:
+        ensure_dir(self.output_dir / self.assets_subdir)
+        dest = self.assets_dir / filename
+        counter = 1
+        while dest.exists():
+            stem = dest.stem
+            dest = self.assets_dir / f"{stem}_{counter}{dest.suffix}"
+            counter += 1
+        dest.write_bytes(data)
+        relative = f"{self.assets_subdir}/{dest.name}"
+        logger.info("Saved locally: %s", relative)
+        return "", relative
+
+    async def _store_base64(self, data: bytes, filename: str) -> tuple[str, str]:
+        encoded = base64.b64encode(data).decode()
+        ext = filename.rsplit(".", 1)[-1] if "." in filename else "png"
+        mime = f"image/{ext}"
+        data_uri = f"data:{mime};base64,{encoded}"
+        logger.info("Encoded base64: %s (%d bytes)", filename, len(encoded))
+        return "", data_uri
+
+    async def _store_remote(self, data: bytes, filename: str) -> tuple[str, str]:
+        if self.image_host is None:
+            raise RuntimeError("No image host configured for remote mode")
+        async with aiohttp.ClientSession() as session:
+            url = await self.image_host.upload(data, filename, session=session)
+        logger.info("Uploaded: %s -> %s", filename, url)
+        return "", url
 
     def rewrite_markdown_images(self, markdown: str) -> str:
         import re

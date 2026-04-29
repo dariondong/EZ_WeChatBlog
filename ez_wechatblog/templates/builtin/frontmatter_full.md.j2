@@ -1,0 +1,9 @@
+---
+title: "{{ metadata.title }}"
+author: "{{ metadata.author }}"
+date: "{{ metadata.date }}"
+tags: [{{ metadata.tags | join(', ') | wrap('"') }}]
+url: "{{ metadata.url }}"
+---
+
+{{ body }}
