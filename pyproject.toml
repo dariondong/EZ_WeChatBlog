@@ -1,6 +1,6 @@
 [project]
 name = "ez-wechatblog"
-version = "0.1.0"
+version = "20260429B"
 description = "微信公众号文章 → 通用 Markdown / 多平台博客后端"
 authors = [{ name = "EZ_WeChatBlog Contributors" }]
 license = { text = "MIT" }
@@ -16,6 +16,7 @@ dependencies = [
     "pluggy>=1.5.0",
     "markdownify>=0.13.0",
     "Pillow>=10.0.0",
+    "Jinja2>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,9 @@ dev = [
 ]
 fetcher = [
     "playwright>=1.50.0",
+]
+camoufox = [
+    "camoufox>=0.1.0",
 ]
 
 [project.scripts]

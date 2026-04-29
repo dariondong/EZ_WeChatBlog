@@ -4,6 +4,8 @@ from pathlib import Path
 import pluggy
 
 from ez_wechatblog.publishers.base import Article, BasePublisher
+from ez_wechatblog.publishers.hexo import HexoPublisher
+from ez_wechatblog.publishers.hugo import HugoPublisher
 from ez_wechatblog.publishers.local import LocalPublisher
 
 logger = logging.getLogger(__name__)
@@ -53,4 +55,6 @@ class PluginManager:
 def create_manager() -> PluginManager:
     pm = PluginManager()
     pm.register_builtin(LocalPublisher())
+    pm.register_builtin(HugoPublisher())
+    pm.register_builtin(HexoPublisher())
     return pm

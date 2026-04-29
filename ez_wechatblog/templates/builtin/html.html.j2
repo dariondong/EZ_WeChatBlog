@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ metadata.title }}</title>
+  <meta name="author" content="{{ metadata.author }}">
+  <meta name="date" content="{{ metadata.date }}">
+  {% if metadata.tags %}
+  <meta name="keywords" content="{{ metadata.tags | join(', ') }}">
+  {% endif %}
+  <style>
+    body { max-width: 800px; margin: 0 auto; padding: 2em; line-height: 1.8; font-size: 16px; }
+    pre { background: #f5f5f5; padding: 1em; overflow-x: auto; border-radius: 4px; }
+    code { background: #f0f0f0; padding: 0.2em 0.4em; border-radius: 3px; }
+    img { max-width: 100%; height: auto; }
+    blockquote { border-left: 4px solid #ccc; margin-left: 0; padding-left: 1em; color: #666; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+  </style>
+</head>
+<body>
+  <article>
+    <header>
+      <h1>{{ metadata.title }}</h1>
+      <p class="meta">
+        {% if metadata.author %}作者：{{ metadata.author }} · {% endif %}
+        {% if metadata.date %}{{ metadata.date }}{% endif %}
+        {% if metadata.url %}
+        · <a href="{{ metadata.url }}">原文链接</a>
+        {% endif %}
+      </p>
+    </header>
+    <div class="content">
+{{ body }}
+    </div>
+  </article>
+</body>
+</html>
