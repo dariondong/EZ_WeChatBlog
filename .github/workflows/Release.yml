@@ -39,26 +39,37 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"        # ← 去掉 refs/tags/，不要带 v
+          TAG="${GITHUB_REF#refs/tags/}"
           echo "version=$TAG" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Extracted version: $TAG"
+        shell: bash
 
       - name: Update pyproject.toml version
         run: |
-          sed -i "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
-          echo "Updated pyproject.toml:"
-          grep "^version" pyproject.toml
+          python -c "
+          import re
+          version = '${{ steps.version.outputs.version }}'
+          with open('pyproject.toml', 'r') as f:
+              content = f.read()
+          content = re.sub(
+              r'^version = .*',
+              f'version = \"{version}\"',
+              content, count=1, flags=re.MULTILINE
+          )
+          with open('pyproject.toml', 'w') as f:
+              f.write(content)
+          print(f'Updated version to: {version}')
+          "
 
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main                       # ← 切回 main 分支
-          sed -i "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
+          git checkout main
           git add pyproject.toml
           git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
-          git push origin main                    # ← 明确推到 main
+          git push origin main
 
       - name: Build package
         run: |
@@ -77,7 +88,7 @@ jobs:
           if [ -z "$PREV_TAG" ]; then
             CHANGES=$(git log --oneline --no-merges HEAD | head -20)
           else
-            CHANGES=$(git log --oneline --no-merges ${PREV_TAG}..HEAD)
+            CHANGES=$(git log --oneline --no-merges "${PREV_TAG}"..HEAD)
           fi
           echo "changes<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGES" >> $GITHUB_OUTPUT
