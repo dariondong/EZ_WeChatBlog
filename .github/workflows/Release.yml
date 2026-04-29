@@ -32,17 +32,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Extract version from tag
+      - name: Extract and normalize version
         id: version
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          echo "version=$TAG" >> $GITHUB_OUTPUT
+          VERSION=$(python -c "
+          import re, sys
+          tag = '$TAG'
+          # Alpha
+          tag = re.sub(r'-?Alpha(\d*)', lambda m: '.a' + (m.group(1) or '0'), tag, flags=re.IGNORECASE)
+          # Beta
+          tag = re.sub(r'-?Beta(\d*)', lambda m: '.b' + (m.group(1) or '0'), tag, flags=re.IGNORECASE)
+          # RC
+          tag = re.sub(r'-?RC(\d*)', lambda m: '.rc' + (m.group(1) or '0'), tag, flags=re.IGNORECASE)
+          # 剩余连字符 → 点
+          tag = tag.replace('-', '.')
+          # 去掉工程号（字母后缀如 .20260429C → .post20260429）
+          tag = re.sub(r'\.(\d{8})[A-Za-z]*$', r'.post\1', tag)
+          print(tag)
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Extracted version: $TAG"
+          echo "Original: $TAG"
+          echo "Normalized: $VERSION"
         shell: bash
 
       - name: Update pyproject.toml and commit
@@ -62,21 +74,11 @@ jobs:
           )
           with open('pyproject.toml', 'w') as f:
               f.write(content)
-          print(f'Updated version to: {version}')
+          print(f'Updated to: {version}')
           "
           git add pyproject.toml
           git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push origin main
-
-      - name: Build package
-        run: |
-          pip install build
-          python -m build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
 
       - name: Generate changelog
         id: changelog
@@ -99,14 +101,5 @@ jobs:
           body: |
             ## Changes
             ${{ steps.changelog.outputs.changes }}
-
-            ## 安装
-            ```bash
-            pip install ez-wechatblog==${{ steps.version.outputs.version }}
-            ```
-
-            ## Assets
-            - [PyPI](https://pypi.org/project/ez-wechatblog/${{ steps.version.outputs.version }}/)
-          files: dist/*
           draft: false
           prerelease: false
