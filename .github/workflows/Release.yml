@@ -39,9 +39,9 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
+          TAG="${GITHUB_REF#refs/tags/}"        # ← 去掉 refs/tags/，不要带 v
           echo "version=$TAG" >> $GITHUB_OUTPUT
-          echo "tag=v$TAG" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Extracted version: $TAG"
 
       - name: Update pyproject.toml version
@@ -54,9 +54,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main                       # ← 切回 main 分支
+          sed -i "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
           git add pyproject.toml
           git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
-          git push
+          git push origin main                    # ← 明确推到 main
 
       - name: Build package
         run: |
@@ -71,7 +73,7 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          PREV_TAG=$(git tag --sort=-creatordate | head -2 | tail -1)
+          PREV_TAG=$(git tag --sort=-creatordate | sed -n '2p')
           if [ -z "$PREV_TAG" ]; then
             CHANGES=$(git log --oneline --no-merges HEAD | head -20)
           else
