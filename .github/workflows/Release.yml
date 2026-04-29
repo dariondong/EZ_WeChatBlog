@@ -45,8 +45,11 @@ jobs:
           echo "Extracted version: $TAG"
         shell: bash
 
-      - name: Update pyproject.toml version
+      - name: Update pyproject.toml and commit
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
           python -c "
           import re
           version = '${{ steps.version.outputs.version }}'
@@ -61,12 +64,6 @@ jobs:
               f.write(content)
           print(f'Updated version to: {version}')
           "
-
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main
           git add pyproject.toml
           git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push origin main
