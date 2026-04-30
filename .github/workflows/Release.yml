@@ -30,55 +30,90 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: Beta
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract and normalize version
         id: version
+        env:
+          RAW_TAG: ${{ github.ref_name }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION=$(python -c "
-          import re, sys
-          tag = '$TAG'
-          # Alpha
-          tag = re.sub(r'-?Alpha(\d*)', lambda m: '.a' + (m.group(1) or '0'), tag, flags=re.IGNORECASE)
-          # Beta
-          tag = re.sub(r'-?Beta(\d*)', lambda m: '.b' + (m.group(1) or '0'), tag, flags=re.IGNORECASE)
-          # RC
-          tag = re.sub(r'-?RC(\d*)', lambda m: '.rc' + (m.group(1) or '0'), tag, flags=re.IGNORECASE)
-          # 剩余连字符 → 点
-          tag = tag.replace('-', '.')
-          # 去掉工程号（字母后缀如 .20260429C → .post20260429）
-          tag = re.sub(r'\.(\d{8})[A-Za-z]*$', r'.post\1', tag)
+          VERSION=$(python3 -c "
+          import os, re
+          tag = os.environ['RAW_TAG']
+          # Beta 标签：26.1-Beta1-20260429A
+          beta_match = re.match(r'^(\d+\.\d+)-Beta(\d+)-(\d{8})[A-Z]$', tag)
+          if beta_match:
+              major_minor, beta_num, date = beta_match.groups()
+              tag = f'{major_minor}.b{beta_num}.post{date}'
+              print(tag)
+              exit(0)
+          # 工程号标签：20260430A / 20260430B / 20260430C / 20260430D
+          eng_match = re.match(r'^(\d{4})(\d{2})(\d{2})[A-Z]$', tag)
+          if eng_match:
+              y, m, d = eng_match.groups()
+              with open('pyproject.toml', 'r') as f:
+                  content = f.read()
+              version_match = re.search(r'^version = \"(\d+\.\d+)', content, re.MULTILINE)
+              major_minor = version_match.group(1) if version_match else '0.0'
+              tag = f'{major_minor}.dev{y}{m}{d}'
+              print(tag)
+              exit(0)
           print(tag)
           ")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Original: $TAG"
-          echo "Normalized: $VERSION"
-        shell: bash
+          echo "tag=$RAW_TAG" >> $GITHUB_OUTPUT
+          echo "Original tag: $RAW_TAG"
+          echo "Normalized version: $VERSION"
 
-      - name: Update pyproject.toml and commit
+      - name: Update pyproject.toml
+        id: update
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main
-          python -c "
+          TARGET_VERSION="${{ steps.version.outputs.version }}"
+          CURRENT_VERSION=$(grep -Po '(?<=^version = ")[^"]*' pyproject.toml || echo "")
+          echo "Current version: $CURRENT_VERSION"
+          echo "Target version: $TARGET_VERSION"
+          if [ "$CURRENT_VERSION" = "$TARGET_VERSION" ]; then
+            echo "Version already up to date. Skipping."
+            echo "changed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          python3 -c "
           import re
-          version = '${{ steps.version.outputs.version }}'
+          target = '${TARGET_VERSION}'
           with open('pyproject.toml', 'r') as f:
               content = f.read()
+          match = re.search(r'^version = .*', content, flags=re.MULTILINE)
+          if not match:
+              raise ValueError('version not found in pyproject.toml')
+          print(f'Before: {match.group()}')
           content = re.sub(
               r'^version = .*',
-              f'version = \"{version}\"',
-              content, count=1, flags=re.MULTILINE
+              f'version = \"{target}\"',
+              content,
+              count=1,
+              flags=re.MULTILINE
           )
           with open('pyproject.toml', 'w') as f:
               f.write(content)
-          print(f'Updated to: {version}')
+          with open('pyproject.toml', 'r') as f:
+              new = f.read()
+          new_match = re.search(r'^version = .*', new, flags=re.MULTILINE)
+          print(f'After: {new_match.group()}')
           "
+          git diff pyproject.toml
+          echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Commit and push version bump
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml
-          git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
-          git push origin main
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
+          git push origin Beta
+          echo "✅ Version pushed to Beta"
 
       - name: Generate changelog
         id: changelog
@@ -88,6 +123,9 @@ jobs:
             CHANGES=$(git log --oneline --no-merges HEAD | head -20)
           else
             CHANGES=$(git log --oneline --no-merges "${PREV_TAG}"..HEAD)
+          fi
+          if [ -z "$CHANGES" ]; then
+            CHANGES="No changes since previous release"
           fi
           echo "changes<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGES" >> $GITHUB_OUTPUT
@@ -103,3 +141,5 @@ jobs:
             ${{ steps.changelog.outputs.changes }}
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
